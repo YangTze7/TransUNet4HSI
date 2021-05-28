@@ -34,6 +34,40 @@ from .metric import IOUMetric
 Image.MAX_IMAGE_PIXELS = 1000000000000000
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 
+def patch_first_conv(model, in_channels):
+    """Change first convolution layer input channels.
+    In case:
+        in_channels == 1 or in_channels == 2 -> reuse original weights
+        in_channels > 3 -> make random kaiming normal initialization
+    """
+
+    # get first conv
+    for module in model.modules():
+        if isinstance(module, nn.Conv2d):
+            break
+
+    # change input channels for first conv
+    module.in_channels = in_channels
+    weight = module.weight.detach()
+    reset = False
+
+    if in_channels == 1:
+        weight = weight.sum(1, keepdim=True)
+    elif in_channels == 2:
+        weight = weight[:, :2] * (3.0 / 2.0)
+    else:
+        reset = True
+        weight = torch.Tensor(
+            module.out_channels,
+            module.in_channels // module.groups,
+            *module.kernel_size
+        )
+
+    module.weight = nn.parameter.Parameter(weight)
+    if reset:
+        module.reset_parameters()
+
+
 def smooth(v, w=0.85):
     last = v[0]
     smoothed = []
@@ -87,7 +121,7 @@ def train_net(param, model, imgs_dirs,train_transform,plot=False,device='cuda'):
     # sample_nums_train = sample_nums*(1-val_ratio)
     # train_data, valid_data = torch.utils.data.random_split(mass_dataset, [int(sample_nums_train), sample_nums-int(sample_nums_train)])
     
-    
+    patch_first_conv(model,32)
     for fold, (train_ids, test_ids) in enumerate(kfold.split(imgs_dirs)):
         print(f'FOLD {fold}')
         print('--------------------------------')
@@ -135,6 +169,7 @@ def train_net(param, model, imgs_dirs,train_transform,plot=False,device='cuda'):
 
         logger.info('Total Epoch:{} Image_size:({}, {}) Training num:{}  Validation num:{}'.format(epochs, x, y, train_data_size, valid_data_size))
         #
+        model = model.cuda()
         model.apply(reset_weights)
         for epoch in range(epoch_start, epochs):
             epoch_start = time.time()
